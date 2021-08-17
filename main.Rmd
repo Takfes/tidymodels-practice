@@ -1,0 +1,176 @@
+---
+title: "tidymodels-practice"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## TODO 
+1. future_frame https://business-science.github.io/timetk/reference/index.html
+2. recursive https://business-science.github.io/modeltime/reference/recursive.html
+3. replace step_ma with step_slidify_augment()
+
+Install Packages
+```{r}
+# remotes::install_github("bagasbgy/quantrecipes")
+# remotes::install_github('curso-r/treesnip')
+# install.packages('modeltime.ensemble')
+# remotes::install_github('catboost/catboost',subdir='catboost/R-package')
+```
+
+Load packages
+```{r}
+
+library(pacman)
+pacman::p_load(tidyverse,tidymodels,skimr,lubridate,janitor,
+               modeltime,timetk,quantrecipes,modeltime.ensemble,
+               RSQLite,DBI,dbplyr,plotly,assertthat,
+               xgboost,lightgbm)
+
+```
+
+
+Custom Functions
+```{r}
+isna <- function(df){
+  return(colSums(is.na(df)) %>% as.data.frame() %>% rename(missing = 1))
+}
+
+```
+
+
+Load Data
+```{r}
+con <- dbConnect(RSQLite::SQLite(), "/Users/takis/Desktop/sckool/my-crypto-app/data/assets.db")
+
+# # DBI
+# query using DBI
+# dbListTables(con)
+# dbListFields(con, "futures15")
+
+res <- dbSendQuery(con,"SELECT * FROM futures15 where symbol = 'BTCUSDT'")
+raw <- dbFetch(res)
+
+```
+
+
+Time Series plots
+```{r}
+
+# df %>% 
+#   plot_time_series(time,close,
+#                    .interactive=TRUE)
+
+df %>% ggplot(aes(x=time,y=close)) +
+  geom_line() + 
+  geom_smooth()
+
+
+```
+
+Dplyr Preprocessing (avoid this - prefer recipes)
+```{r}
+
+# df <- raw %>%  
+#   arrange(openTime) %>% 
+#   mutate(
+#     openTime = as.POSIXct(openTime, format="%Y-%m-%d %H:%M:%S", tz="UTC"),
+#     closeTime = as.POSIXct(closeTime, format="%Y-%m-%d %H:%M:%S", tz="UTC"),
+#     close = lag(close,1,align='right'),
+#     volume = lag(volume,1,align='right')
+#     ) %>% 
+#   select(time = openTime, close, volume) %>% 
+#   tk_augment_lags(.value = c(close,volume), 
+#                   .lags = c(1,4,8,16,96),
+#                   .names = 'auto') %>% 
+#   tk_augment_slidify(.value = ends_with('_lag1'), 
+#                      .period  = c(24,48,96), 
+#                      .f = 'mean') %>% 
+#   tk_augment_timeseries_signature(time) %>% 
+#   select(starts_with(c('time','close','volume')),
+#          index.num,wday,month,am.pm,mday,yday,week) %>% 
+#   janitor::clean_names() %>% 
+#   na.omit()
+#   
+# nrow(raw) - nrow(df)
+#   
+# df %>% glimpse()
+# df %>% isna()
+# df %>% skim()
+
+```
+
+Train Test Split
+```{r}
+
+df <- raw %>%
+  arrange(openTime) %>%
+  mutate(
+    openTime = as.POSIXct(openTime, format = "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+    closeTime = as.POSIXct(closeTime, format = "%Y-%m-%d %H:%M:%S", tz =
+                             "UTC"),
+  ) %>%
+  select(time = openTime, close, volume)
+
+splits <- time_series_split(df, time, assess = 36, cumulative = T)
+train <- training(splits)
+test <- testing(splits)
+
+train %>% nrow()
+test %>% nrow()
+
+```
+
+
+Preprocessing with Recipes
+```{r}
+
+recipe_spec <- recipe(close ~ ., data = train) %>%
+  step_lag(volume, close, lag = c(1, 4, 8, 16, 96)) %>%
+  step_ma(starts_with('lag_1'), n = 24, prefix = 'ma_24') %>%
+  step_ma(starts_with('lag_1'), n = 96, prefix = 'ma_96') %>%
+  step_ma(
+    starts_with('lag_1'),
+    n = 24,
+    ma_fun = TTR::EMA,
+    prefix = 'ema_24'
+  ) %>%
+  step_ma(
+    starts_with('lag_1'),
+    n = 96,
+    ma_fun = TTR::EMA,
+    prefix = 'ema_96'
+  ) %>%
+  step_fourier(time, period = c(4, 24 * 4), K = 3) %>%
+  step_timeseries_signature(time) %>%
+  step_rm(matches("(.iso$)|(.xts$)|(_year$)|(_quarter$)|(_halfl$)|(.lbl$)")) %>%
+  step_rm(volume) %>%
+  update_role(time, new_role = 'id') %>%
+  step_nzv(all_numeric_predictors(),-all_outcomes()) %>%
+  step_zv(all_numeric_predictors(),-all_outcomes()) %>%
+  step_corr(all_numeric_predictors(), -all_outcomes(), threshold = 0.95) %>%
+  step_naomit(all_predictors())
+
+recipe_spec
+
+recipe_spec %>% prep() %>% juice() %>% glimpse()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
