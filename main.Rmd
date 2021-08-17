@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 1. future_frame https://business-science.github.io/timetk/reference/index.html
 2. recursive https://business-science.github.io/modeltime/reference/recursive.html
 3. replace step_ma with step_slidify_augment()
+4. time_series_cv instead of time_series_split
 
 Install Packages
 ```{r}
@@ -43,32 +44,23 @@ isna <- function(df){
 
 Load Data
 ```{r}
-con <- dbConnect(RSQLite::SQLite(), "/Users/takis/Desktop/sckool/my-crypto-app/data/assets.db")
+con <-
+  dbConnect(RSQLite::SQLite(),
+            "/Users/takis/Desktop/sckool/my-crypto-app/data/assets.db")
 
 # # DBI
 # query using DBI
 # dbListTables(con)
 # dbListFields(con, "futures15")
 
-res <- dbSendQuery(con,"SELECT * FROM futures15 where symbol = 'BTCUSDT'")
+res <-
+  dbSendQuery(con, "SELECT * FROM futures15 where symbol = 'BTCUSDT'")
 raw <- dbFetch(res)
 
-```
-
-
-Time Series plots
-```{r}
-
-# df %>% 
-#   plot_time_series(time,close,
-#                    .interactive=TRUE)
-
-df %>% ggplot(aes(x=time,y=close)) +
-  geom_line() + 
-  geom_smooth()
-
+raw %>% dim()
 
 ```
+
 
 Dplyr Preprocessing (avoid this - prefer recipes)
 ```{r}
@@ -112,46 +104,98 @@ df <- raw %>%
     closeTime = as.POSIXct(closeTime, format = "%Y-%m-%d %H:%M:%S", tz =
                              "UTC"),
   ) %>%
-  select(time = openTime, close, volume)
+  select(time = openTime, close, volume) %>% 
+  filter(time >= '2021-01-01')
 
-splits <- time_series_split(df, time, assess = 36, cumulative = T)
+raw %>% nrow()
+df %>% nrow()
+
+splits <- time_series_split(df, time, assess = 4*24, cumulative = T)
 train <- training(splits)
 test <- testing(splits)
 
 train %>% nrow()
 test %>% nrow()
 
+splits_cv <-  time_series_cv(df, time, assess = 4*24, cumulative = T, skip = 4*24*7)# slice_limit = 8)
+
+splits_cv %>% dim()
+
 ```
+
+
+Time Series plots
+```{r}
+
+df %>%
+  plot_time_series(time,close,
+                   .interactive=TRUE)
+
+train %>% mutate(type = 'train') %>%
+  bind_rows(test %>% mutate(type = 'test')) %>%
+  arrange(time) %>% 
+  filter(time >= '2021-08-10') %>% 
+  ggplot(aes(x = time, y = close, color = type)) +
+  geom_line() +
+  labs(x=NULL,y=NULL) +
+  ggtitle('Example Train Test Split (zoomed in)')
+
+splits_cv %>% plot_time_series_cv_plan(
+  time,
+  close,
+  .facet_ncol = 1,
+  .line_alpha = 0.5,
+  .interactive = F
+)
+
+
+```
+
 
 
 Preprocessing with Recipes
 ```{r}
 
+
 recipe_spec <- recipe(close ~ ., data = train) %>%
   step_lag(volume, close, lag = c(1, 4, 8, 16, 96)) %>%
-  step_ma(starts_with('lag_1'), n = 24, prefix = 'ma_24') %>%
-  step_ma(starts_with('lag_1'), n = 96, prefix = 'ma_96') %>%
-  step_ma(
-    starts_with('lag_1'),
-    n = 24,
-    ma_fun = TTR::EMA,
-    prefix = 'ema_24'
+  step_slidify_augment(
+    starts_with('lag_1_'),
+    align = 'right',
+    period = c(4, 12, 24, 48, 96),
+    .f = ~ mean(.x, na.rm = T),
+    prefix = "MA_"
   ) %>%
-  step_ma(
-    starts_with('lag_1'),
-    n = 96,
-    ma_fun = TTR::EMA,
-    prefix = 'ema_96'
-  ) %>%
-  step_fourier(time, period = c(4, 24 * 4), K = 3) %>%
+  # step_slidify_augment(
+  #   starts_with('lag_1_'),
+  #   align = 'right',
+  #   period = c(48, 96, 192, 384),
+  #   .f = ~ TTR::EMA(.x, na.rm = T, n = 1),
+  #   prefix = "EMA_"
+  # ) %>%
+  # step_ma(starts_with('lag_1'), n = 24, prefix = 'ma_24') %>%
+  # step_ma(starts_with('lag_1'), n = 96, prefix = 'ma_96') %>%
+  # step_ma(
+  #   starts_with('lag_1'),
+  #   n = 24,
+  #   ma_fun = TTR::EMA,
+  #   prefix = 'ema_24'
+  # ) %>%
+  # step_ma(
+  #   starts_with('lag_1'),
+  #   n = 96,
+#   ma_fun = TTR::EMA,
+#   prefix = 'ema_96'
+# ) %>%
+step_fourier(time, period = c(4, 24 * 4, 24 * 4 * 7), K = 3) %>%
   step_timeseries_signature(time) %>%
-  step_rm(matches("(.iso$)|(.xts$)|(_year$)|(_quarter$)|(_halfl$)|(.lbl$)")) %>%
+  step_rm(matches("(.iso$)|(.xts$)|(_year$)|(_quarter$)|(_halfl$)|(.lbl$)|(^time_week)|(time_half)")) %>%
   step_rm(volume) %>%
   update_role(time, new_role = 'id') %>%
-  step_nzv(all_numeric_predictors(),-all_outcomes()) %>%
-  step_zv(all_numeric_predictors(),-all_outcomes()) %>%
-  step_corr(all_numeric_predictors(), -all_outcomes(), threshold = 0.95) %>%
-  step_naomit(all_predictors())
+  step_nzv(all_numeric_predictors(), -all_outcomes()) %>%
+  step_zv(all_numeric_predictors(), -all_outcomes()) %>%
+  step_corr(all_numeric_predictors(),-all_outcomes(), threshold = 0.9) %>%
+  step_naomit(all_predictors(),-all_outcomes())
 
 recipe_spec
 
@@ -161,6 +205,24 @@ recipe_spec %>% prep() %>% juice() %>% glimpse()
 
 
 
+```{r}
+lasso_spec <- linear_reg(mixture = 1, penalty = 0.5) %>% 
+  set_engine('glmnet') %>% 
+  set_mode('regression')
+
+lasso_wf <- workflow() %>% 
+  add_model(lasso_spec) %>% 
+  add_recipe(recipe_spec)
+
+lasso_spec
+lasso_wf
+
+lasso_fit <- lasso_wf %>% fit(train)
+# lasso_fit_cv <- lasso_wf %>% fit_resamples(splits_cv)
+
+lasso_fit_cv %>% collect_metrics()
+
+```
 
 
 
