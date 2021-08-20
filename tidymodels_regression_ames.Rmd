@@ -1,0 +1,22 @@
+---
+title: "tidymodels_regression"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(stacks)
+library(AmesHousing)
+
+df <- make_ames()
+
+df %>% isna() %>% sum()
+df %>% skim()
+
+```
+

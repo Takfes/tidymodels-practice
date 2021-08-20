@@ -113,8 +113,8 @@ splits <- time_series_split(df, time, assess = 4*24, cumulative = T)
 train <- training(splits)
 test <- testing(splits)
 
-train %>% nrow()
-test %>% nrow()
+train %>% dim()
+test %>% dim()
 
 # splits_cv <-  time_series_cv(df, time, assess = 4*24, cumulative = T, skip = 4*24*7)# slice_limit = 8)
 # splits_cv %>% dim()
@@ -158,15 +158,15 @@ Preprocessing with Recipes
 # step_ma
 
 recipe_spec <- recipe(close ~ ., data = train) %>%
-  step_lag(volume, close, lag = c(1, 4, 8, 16, 96)) %>%
+  step_lag(volume, close, lag = c(1, 4, 8, 16)) %>%
   step_slidify_augment(
     starts_with('lag_1_'),
     align = 'right',
-    period = c(4, 12, 24, 48, 96),
+    period = c(4, 12, 24),
     .f = ~ mean(.x, na.rm = T),
     prefix = "MA_"
   ) %>%
-  step_fourier(time, period = c(4, 24 * 4, 24 * 4 * 7), K = 3) %>%
+  step_fourier(time, period = c(4, 8), K = 3) %>%
   step_timeseries_signature(time) %>%
   step_rm(
     matches(
@@ -178,10 +178,16 @@ recipe_spec <- recipe(close ~ ., data = train) %>%
   step_nzv(all_numeric_predictors(),-all_outcomes()) %>%
   step_zv(all_numeric_predictors(),-all_outcomes()) %>%
   step_corr(all_numeric_predictors(), -all_outcomes(), threshold = 0.9) %>%
+  step_impute_median(all_predictors()) %>% 
   step_naomit(all_predictors(), -all_outcomes())
+  
 
-# recipe_spec
-# recipe_spec %>% prep() %>% juice() %>% glimpse()
+recipe_spec
+recipe_spec %>% prep() %>% juice() %>% glimpse()
+
+test_data <- recipe_spec %>% prep() %>% bake(new_data = test)
+test_data %>% nrow()
+test %>% nrow()
 
 ```
 
@@ -205,7 +211,7 @@ glm_fit <- glm_wf %>% fit(train)
 2. RANDOM FOREST
 ```{r}
 
-rf_spec <- rand_forest(trees = 500, min_n = 10) %>% 
+rf_spec <- rand_forest(trees = 100, min_n = 10) %>% 
   set_engine('randomForest') %>% 
   set_mode('regression')
 
@@ -255,8 +261,24 @@ model_time_table <- modeltime_table(
   xgb_fit
 )
 
-# model_time_table %>% 
-#   modeltime_calibrate(testing(splits), quiet = F)
+model_time_table
+
+calibration_tbl <- model_time_table %>%
+  modeltime_calibrate(new_data = test, quiet = F)
+
+calibration_tbl %>%
+    modeltime_accuracy()
+
+gg <- calibration_tbl %>%
+    modeltime_forecast(
+        new_data    = testing(splits),
+        actual_data = df
+    )
+
+gg %>% plot_modeltime_forecast()
+
+gg %>% select(.index,.model_desc,.value) %>% 
+  pivot_wider(names_from = .model_desc, values_from = .value) %>% tail()
 
 ```
 

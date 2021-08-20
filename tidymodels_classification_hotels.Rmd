@@ -1,0 +1,25 @@
+---
+title: "hotels_tidymodels_classification"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load Dependencies
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(stacks)
+
+hotels <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-02-11/hotels.csv")
+
+raw %>% dim()
+raw %>% names()
+raw %>% isna()
+raw %>% skim()
+
+```
+
+
