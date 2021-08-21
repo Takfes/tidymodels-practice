@@ -34,10 +34,7 @@ pacman::p_load(tidyverse,tidymodels,skimr,lubridate,janitor,
                RSQLite,DBI,dbplyr,plotly,assertthat,
                xgboost,lightgbm)
 
-isna <- function(df){
-  return(colSums(is.na(df)) %>% as.data.frame() %>% rename(missing = 1))
-}
-
+source('takmeR.R')
 ```
 
 

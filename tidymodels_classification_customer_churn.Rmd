@@ -1,0 +1,160 @@
+---
+title: "tidymodels_classification_customer_churn"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Setting the stage
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(treesnip)
+library(skimr)
+library(DataExplorer)
+library(GGally)
+library(Boruta)
+
+source('takmeR.R')
+
+datapath <- 'data/classification_customer_churn/'
+train_raw <- readr::read_csv(paste0(datapath,'train.csv'))
+test_raw <- readr::read_csv(paste0(datapath,'test.csv'))
+```
+
+
+## Explore dataset
+### basics
+
+```{r}
+map(list(train_raw,test_raw),dim)
+train_raw %>% glimpse()
+train_raw %>% skim()
+```
+
+
+
+## select features to visualize using boruta selection algo
+## switch withTentative according to the amount of features you wish to plot
+## https://www.machinelearningplus.com/machine-learning/feature-selection/
+## utilize ggally to plot selected boruta vars
+
+```{r}
+boruta_output <- Boruta(attrition_flag ~ ., data=na.omit(train_raw), doTrace=0)  
+boruta_select <- getSelectedAttributes(boruta_output, withTentative = F)
+
+train_raw %>% 
+  mutate_if(is.character,factor) %>%
+  mutate(
+    attrition_flag = factor(attrition_flag)
+    ) %>% 
+  select(-id,boruta_select,attrition_flag) %>% 
+  ggpairs(mapping = aes(color = attrition_flag))
+```
+
+
+## Create report - Dataexplorer
+
+```{r}
+train_raw %>% 
+  mutate_if(is.character,factor) %>%
+  mutate(attrition_flag = factor(attrition_flag)) %>% 
+  select(-id) %>% 
+  create_report(y = "attrition_flag", output_file = 'customer_churn.html')
+```
+
+
+## Custom factor vars plotting
+
+```{r}
+train_raw %>%
+  mutate_if(is.character,factor) %>%
+  mutate(attrition_flag = factor(attrition_flag)) %>% 
+  select_if(is.factor) %>%
+  pivot_longer(gender:income_category) %>%
+  arrange(name) %>% 
+  ggplot(aes(y = value, fill = attrition_flag)) +
+  geom_bar(position = "fill") +
+  facet_wrap(vars(name), scales = "free", ncol = 2) +
+  labs(x = NULL, y = NULL, fill = NULL)
+```
+
+
+## Custom numeric vars plotting
+
+```{r}
+train_raw %>%
+  mutate_if(is.character,factor) %>%
+  select_if(is.numeric) %>%
+  mutate(attrition_flag = factor(attrition_flag)) %>% 
+  select(-id) %>%
+  mutate_if(is.numeric,log) %>%
+  pivot_longer(customer_age:avg_utilization_ratio) %>%
+  arrange(name) %>%
+  ggplot(aes(y = value, fill = attrition_flag)) +
+  geom_density() +
+  facet_wrap(vars(name), scales = "free", ncol = 2) +
+  coord_flip()+
+  labs(x = NULL, y = NULL, fill = NULL)
+```
+
+## Plot histograms ; log non-normal variables (utilize qq-plots from report above)
+
+```{r}
+train_raw %>% 
+  mutate_if(is.character,factor) %>%
+  mutate(
+    attrition_flag = factor(attrition_flag)
+    ) %>% 
+  mutate_at(vars(credit_limit,total_revolving_bal,total_trans_amt,
+                 total_trans_ct,total_amt_chng_q4_q1,total_ct_chng_q4_q1),
+            funs(log = log)) %>% 
+  select_if(is.numeric) %>% 
+  select(contains('_log')) %>% 
+  plot_histogram()
+```
+
+
+## Prepare modeling dataset
+
+```{r}
+train <- train_raw %>% 
+  mutate_if(is.character,factor) %>%
+  mutate(attrition_flag = factor(attrition_flag)) %>% 
+  select(attrition_flag,boruta_select)
+
+set.seed(123)
+train_folds <- vfold_cv(train, v = 5, strata = attrition_flag)
+train_folds
+
+train_boot <- bootstraps(train)
+train_boot
+
+```
+
+
+## Create recipes
+
+1. explore different balancing options
+2. explore bootstraps vs cv folds
+3. create different preprocessing recipes
+4. test interaction features
+5. enable several ml algorithms
+6. enable loglog metric and prauc metric
+7. create workflowsets
+8. optimize based on racing methods
+9. explore performance
+10. enable stacked model
+
+
+```{r}
+
+bas
+
+
+
+```
+
