@@ -17,12 +17,15 @@ library(skimr)
 library(DataExplorer)
 library(GGally)
 library(Boruta)
+library(themis)
+library(finetune)
+library(vip)
 
 source('takmeR.R')
 
 datapath <- 'data/classification_customer_churn/'
 train_raw <- readr::read_csv(paste0(datapath,'train.csv'))
-test_raw <- readr::read_csv(paste0(datapath,'test.csv'))
+s <- readr::read_csv(paste0(datapath,'test.csv'))
 ```
 
 
@@ -104,14 +107,16 @@ train_raw %>%
 ## Plot histograms ; log non-normal variables (utilize qq-plots from report above)
 
 ```{r}
+
+vars_to_log <- c('credit_limit','total_revolving_bal','total_trans_amt',
+                 'total_trans_ct','total_amt_chng_q4_q1','total_ct_chng_q4_q1')
+
 train_raw %>% 
   mutate_if(is.character,factor) %>%
   mutate(
     attrition_flag = factor(attrition_flag)
     ) %>% 
-  mutate_at(vars(credit_limit,total_revolving_bal,total_trans_amt,
-                 total_trans_ct,total_amt_chng_q4_q1,total_ct_chng_q4_q1),
-            funs(log = log)) %>% 
+  mutate_at(vars(vars_to_log),funs(log = log)) %>% 
   select_if(is.numeric) %>% 
   select(contains('_log')) %>% 
   plot_histogram()
@@ -130,31 +135,282 @@ set.seed(123)
 train_folds <- vfold_cv(train, v = 5, strata = attrition_flag)
 train_folds
 
-train_boot <- bootstraps(train)
+set.seed(234)
+train_boot <- bootstraps(train, strata = attrition_flag)
 train_boot
 
 ```
 
 
-## Create recipes
+# Create preprocessing recipes
 
-1. explore different balancing options
-2. explore bootstraps vs cv folds
-3. create different preprocessing recipes
-4. test interaction features
-5. enable several ml algorithms
-6. enable loglog metric and prauc metric
-7. create workflowsets
-8. optimize based on racing methods
-9. explore performance
-10. enable stacked model
+```{r}
+
+recipe_base <- recipe(attrition_flag~.,data = train) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_other(all_nominal_predictors(),threshold = 0.05) %>% 
+  step_unknown(all_nominal_predictors()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+
+recipe_smote <- recipe_base %>% 
+  step_smote(attrition_flag)
+
+recipe_norm <- recipe_smote %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_scale(all_numeric_predictors())
+
+recipe_log <- recipe_smote %>% 
+  step_log(vars_to_log)
+
+map(
+  list(recipe_base,recipe_smote,recipe_down,recipe_norm,recipe_log), 
+  ~ prep(.x) %>% juice %>% pull(attrition_flag) %>% table %>% prop.table
+  )
+
+```
+
+
+# Fit individual models model
+
+## FIT KNN w/o WORKFLOW
+
+```{r}
+
+knn_spec <- nearest_neighbor() %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+knn_fit <- knn_spec %>%
+  fit(attrition_flag ~ ., data = (recipe_base %>% prep %>% juice))
+
+knn_fit %>% predict(recipe_base %>% prep %>% juice) %>% 
+  bind_cols(train %>% pull(attrition_flag)) %>% rename(pred = 1, actual = 2) %>% 
+  table()
+
+knn_fit %>% names()
+
+```
+
+
+## FIT KNN w/ WORKFLOW
+
+```{r}
+
+single_knn_spec <- nearest_neighbor() %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+single_knn_wf <- workflow() %>% 
+  add_recipe(recipe_smote) %>% 
+  add_model(single_knn_spec)
+
+single_knn_fit <- single_knn_wf %>% 
+  fit(data = train)
+
+single_knn_fit %>% 
+  extract_fit_parsnip()
+
+single_knn_fit %>% names()
+
+```
+
+## FIT LOGISTIC REG w/ WORKFLOW
+
+```{r}
+
+lr_spec <- logistic_reg(penalty = 0.5) %>% 
+  set_mode('classification') %>% 
+  set_engine('glmnet')
+
+lr_wf <- workflow() %>% 
+  add_recipe(recipe_smote) %>% 
+  add_model(lr_spec)
+
+lr_fit <- lr_wf %>% 
+  fit(data = train)
+
+lr_fit %>% 
+  pull_workflow_fit() %>% 
+  tidy()
+
+```
+
+
+## TUNE XGBOOST
+
+```{r}
+
+# https://www.tidymodels.org/start/tuning/
+
+single_xgb_spec <- 
+  boost_tree(
+    trees = tune(),
+    tree_depth = tune()
+    ) %>% 
+  set_mode('classification') %>% 
+  set_engine('xgboost')
+
+
+xgb_mtrs <- metric_set(accuracy,precision,recall,mn_log_loss,pr_auc,roc_auc)
+xgb_ctrl <- control_resamples(save_pred = TRUE)
+xgb_grid <- grid_regular(trees(),tree_depth(),levels = 5)
+
+xgb_grid %>% nrow()
+xgb_grid %>% count(trees)
+xgb_grid %>% count(tree_depth)
+
+
+single_xgb_wf <- workflow() %>% 
+  add_recipe(recipe_smote) %>% 
+  add_model(single_xgb_spec)
+
+
+doParallel::registerDoParallel()
+set.seed(123)
+single_xgb_res <- single_xgb_wf %>% 
+  tune_grid(
+    resamples = train_boot, #train_folds
+    grid = xgb_grid,
+    metrics = xgb_mtrs
+  )
+
+
+# visualize tune grid metrics
+single_xgb_res %>%
+  collect_metrics() %>% 
+  mutate_if(is.character,factor) %>% 
+  ggplot(aes(tree_depth, mean, color = trees)) +
+  geom_line(size = 1.5, alpha = 0.6) +
+  geom_point(size = 2) +
+  facet_wrap(~ .metric, scales = "free", nrow = 6)
+
+# show top 5 configs
+single_xgb_res %>% show_best("pr_auc")
+
+# select best config
+best_config <- single_xgb_res %>% select_best("pr_auc")
+best_config
+
+# finalize workflow
+final_wf <- 
+  single_xgb_wf %>% 
+  finalize_workflow(best_config)
+
+# refit on the entire data
+final_fit <- 
+  final_wf %>%
+  fit(data = train) 
+
+# extract variable importance
+final_fit %>%
+  pull_workflow_fit() %>% 
+  vip()
+
+# predict w/ final fit
+final_fit %>%
+  predict(test)
+
+```
+
+
+
+
+
+# Prepare model specs
+
+```{r}
+
+# show_engines('svm_rbf')
+
+glm_spec <- logistic_reg(mixture = tune(), penalty = tune()) %>% 
+  set_engine('glmnet') %>% 
+  set_mode('classification')
+
+rf_spec <- rand_forest(trees = tune(), mtry = tune(), min_n = tune()) %>% 
+  set_engine('randomForest') %>% 
+  set_mode('classification')
+
+xgb_spec <- boost_tree(trees = tune(), learn_rate = tune(), min_n = tune()) %>% 
+  set_engine('xgboost') %>% 
+  set_mode('classification')
+
+lgbm_spec <- boost_tree(trees = tune(), mtry = tune(), tree_depth = tune()) %>% 
+  set_engine('lightgbm') %>% 
+  set_mode('classification')
+
+svm_spec <- svm_rbf(rbf_sigma = tune(), margin = tune()) %>% 
+  set_engine('kernlab') %>% 
+  set_mode('classification')
+
+
+```
+
+
+
+# Workflows setup
+
+```{r}
+
+doParallel::registerDoParallel()
+
+preprocessors_list <- list(
+    base = recipe_base,
+    smote = recipe_smote,
+    norm = recipe_norm,
+    log = recipe_log
+  )
+
+models_list <- list(
+    glmnet = glm_spec,
+    rf = rf_spec,
+    xgb = xgb_spec,
+    lgbm = lgbm_spec,
+    svm = svm_spec
+  )
+
+wf_spec <- workflow_set(
+  preproc = preprocessors_list,
+  models = models_list,
+  cross = T
+)
+
+
+wf_spec
+
+workflow_spec %>% 
+  workflow_map(
+    fn = 'tune_race_anova',
+    resamples = train_folds,
+    grid = 10,
+    metrics = NULL,
+    verbose = True
+  )
+
+cores <- parallel::detectCores()
+cores
+
+
+```
+
 
 
 ```{r}
 
-bas
-
-
-
 ```
+
+
+
+# TODOS
+* explore different balancing options
+* explore bootstraps vs cv folds
+* test interaction features
+* enable several ml algorithms
+* pull variable importance when applicable
+* enable loglog metric and prauc metric
+* create workflowsets
+* optimize based on racing methods
+* explore performance
+* enable stacked model
+
 

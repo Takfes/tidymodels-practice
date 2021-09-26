@@ -28,13 +28,13 @@ Load packages
 ```{r}
 
 library(pacman)
-pacman::p_load(tidyverse,tidymodels,skimr,lubridate,janitor,
+pacman::p_load(takmeR,tidyverse,tidymodels,skimr,lubridate,janitor,
                modeltime,timetk,quantrecipes,modeltime.ensemble,
                treesnip,xgboost,lightgbm,randomForest,
                RSQLite,DBI,dbplyr,plotly,assertthat,
                xgboost,lightgbm)
 
-source('takmeR.R')
+
 ```
 
 
